@@ -3,9 +3,9 @@ import pandas as pd
 import matplotlib.pylab as plt
 import time
 import tensorflow as tf
-from utils import *
-from data_preprocess import split_data, load_data, get_datasplit, matrix_data_omega,load_data_omega, make_submission
-from model import AEmodel
+from src.utils import *
+from src.data_preprocess import split_data, load_data, get_datasplit, matrix_data_omega,load_data_omega, make_submission
+from src.model import AEmodel
 # from Utils.DataSplits import DataSplit
 import os
 
@@ -22,7 +22,7 @@ class Trainer():
         for keys in keys_list:
             FLAGS.__delattr__(keys)
 
-    def train(self, train_matrix, test_matrix, variational=False, return_embedding=False):
+    def train(self, train_matrix, test_matrix):
 
         tf.reset_default_graph()
 
@@ -37,8 +37,8 @@ class Trainer():
             model = AEmodel(self.nr_users, self.nr_movies)
 
             # forward, loss and train
-            if not variational:
-                Z = model.encode(x, n_hidden=self.FLAGS.n_hidden, n_embed=self.FLAGS.n_embed, act_hidden=eval(self.FLAGS.act_hidden_e), act_out=eval(self.FLAGS.act_out_e), keep_prob=drop_rate, variational=variational)
+            if not self.FLAGS.VAE:
+                Z = model.encode(x, n_hidden=self.FLAGS.n_hidden, n_embed=self.FLAGS.n_embed, act_hidden=eval(self.FLAGS.act_hidden_e), act_out=eval(self.FLAGS.act_out_e), keep_prob=drop_rate, variational=self.FLAGS.VAE)
                 if self.FLAGS.k_sparse:
                     Z = model.sparse(Z, k=self.FLAGS.k_sparse_factor)
                 outputs = model.decode(Z, n_hidden=self.FLAGS.n_hidden, act_hidden=eval(self.FLAGS.act_hidden_d), act_out=eval(self.FLAGS.act_out_d), keep_prob=drop_rate)
@@ -46,7 +46,7 @@ class Trainer():
                 tf.summary.scalar("loss", loss_op)
             else:
             ## variational:
-                Z_mu, Z_logvar = model.encode(x, n_hidden=self.FLAGS.n_hidden, n_embed=self.FLAGS.n_embed, act_hidden=eval(self.FLAGS.act_hidden_e), act_out=eval(self.FLAGS.act_out_e), keep_prob=drop_rate, variational=variational)
+                Z_mu, Z_logvar = model.encode(x, n_hidden=self.FLAGS.n_hidden, n_embed=self.FLAGS.n_embed, act_hidden=eval(self.FLAGS.act_hidden_e), act_out=eval(self.FLAGS.act_out_e), keep_prob=drop_rate, variational=self.FLAGS.VAE)
                 Z = model.reparameterize(Z_mu, Z_logvar)
                 outputs = model.decode(Z, n_hidden=self.FLAGS.n_hidden, act_hidden=eval(self.FLAGS.act_hidden_d), act_out=eval(self.FLAGS.act_out_d), keep_prob=drop_rate)
                 # loss
@@ -76,12 +76,7 @@ class Trainer():
             merged_summary = tf.summary.merge_all()
             summary_writer = tf.summary.FileWriter(self.FLAGS.summaries_dir, sess.graph)
 
-            # matrix = train_matrix.copy()
-            # print("training matrix vae shape", matrix.shape)
-
             for epoch in range(self.FLAGS.epochs):
-                # if self.FLAGS.DAE: # For denoising AE
-                #    matrix = noisy_labels(train_matrix)
                 ## TRAIN
                 train_losses=[]
 
@@ -92,7 +87,7 @@ class Trainer():
                     train_losses.append(loss)
 
                 ## TEST
-                if not variational:
+                if not self.FLAGS.VAE:
                     test_loss, summary = sess.run([loss_op, merged_summary], {x: train_matrix, x_mask: test_matrix, drop_rate:1.0}) # rbm_inp:rbm_transformed,
                     print("train", np.mean(train_losses), "test", test_loss)
                 else:
@@ -104,7 +99,10 @@ class Trainer():
 
                 summary_writer.add_summary(summary, epoch)
 
-            if variational:
+            if self.FLAGS.save_path!="None":
+                saver.save(sess, self.FLAGS.save_path)
+
+            if self.FLAGS.VAE:
                 ## SAMPLE NEW DATA (can be used to train model)
                 nr_samples = 1000
                 Z_sample = np.random.normal(size=(nr_samples, self.FLAGS.n_embed))
@@ -112,13 +110,13 @@ class Trainer():
                 print(augment.shape)
                 np.save("VAE_sample.npy", augment)
 
-            if return_embedding:
+            if self.FLAGS.return_embedding:
+                # forward pass on full dataset to get bottleneck layer
                 embed = sess.run(Z,{x: train_matrix, drop_rate:1.0})
                 sess.close()
-                # self.del_all_flags(self.FLAGS)
                 return embed
             else:
-                # run on full set to get final reconstructed matrix
+                # forward pass on full set to get final reconstructed matrix
                 out_matrix = sess.run(outputs,{x: train_matrix, drop_rate:1.0}) #rbm_inp:rbm_transformed,
                 sess.close()
                 self.del_all_flags(self.FLAGS)
@@ -127,9 +125,10 @@ class Trainer():
 
 if __name__ == "__main__":
 
-    tf.flags.DEFINE_bool("CV_save_embed", False, "if you want to save all the embeddings")
+    # tf.flags.DEFINE_bool("CV_save_embed", False, "if you want to save all the embeddings")
     tf.flags.DEFINE_string("embedding", "user", "user or movie embedding")
-    tf.flags.DEFINE_integer("val_part", 9, "")
+    tf.flags.DEFINE_bool("VAE", False, "")
+    tf.flags.DEFINE_bool("return_embedding", False, "")
     tf.flags.DEFINE_integer("batch_size", 8, "")
     tf.flags.DEFINE_integer("epochs", 200, "")
     tf.flags.DEFINE_float("learning_rate", 0.0001, "")
@@ -143,47 +142,30 @@ if __name__ == "__main__":
     tf.flags.DEFINE_string("act_out_d", "None", "")
     tf.flags.DEFINE_bool("k_sparse", False, "")
     tf.flags.DEFINE_integer("k_sparse_factor", 20, "")
+    tf.flags.DEFINE_integer("split", 10, "")
     tf.flags.DEFINE_float("dropout_rate", 1.0, "")
     tf.flags.DEFINE_string("summaries_dir", "logs", "")
-    tf.flags.DEFINE_string("save_path", "../Weights/model3/model", "")
-    tf.flags.DEFINE_string("embedding_save_path", "../Weights/ae_embeddings/", "")
-    tf.flags.DEFINE_string("train_data_path", "../data/", "")
+    tf.flags.DEFINE_string("save_path", "None", "")
+    tf.flags.DEFINE_string("embedding_save_path", "results/", "")
+    tf.flags.DEFINE_string("train_data_path", "data/data_train.csv", "")
 
-    # split = DataSplit.load_from_pickle("s10.pickle")
+    data = pd.read_csv(tf.flags.FLAGS.train_data_path)
+    train_matrix, test_matrix = split_data(np.asarray(data), split=tf.flags.FLAGS.split)
+    train_matrix, test_matrix = normalize_01(train_matrix, test_matrix)
+    print(np.unique(train_matrix), np.unique(test_matrix))
+    print(train_matrix.shape, test_matrix.shape)
 
-    if tf.flags.FLAGS.CV_save_embed:
-        for i in range(10):
-            val_ids = split.get_validation(val_part=i)
-            omega_train, omega_test = get_datasplit(val_ids, data_path=tf.flags.FLAGS.train_data_path)
-            train_matrix = matrix_data_omega(omega_train)
-            test_matrix = matrix_data_omega(omega_test)
-            train_matrix, test_matrix = normalize_01(train_matrix, test_matrix)
-            print(np.unique(train_matrix), np.unique(test_matrix))
-            print(train_matrix.shape, test_matrix.shape)
-
-            if tf.flags.FLAGS.embedding=="user":
-                trainer = Trainer(tf.flags.FLAGS, nr_users=10000, nr_movies=1000)
-                embed = trainer.train(train_matrix, test_matrix, variational=False, return_embedding=True)
-            elif tf.flags.FLAGS.embedding=="movie":
-                trainer = Trainer(tf.flags.FLAGS, nr_users=1000, nr_movies=10000)
-                embed = trainer.train(train_matrix.T, test_matrix.T, variational=False, return_embedding=True)
-            else:
-                print("ERROR: embedding must be user or movie")
-                exit()
-            print(embed.shape)
-            np.save(os.path.join(tf.flags.FLAGS.embedding_save_path, tf.flags.FLAGS.embedding+"_embed_ae_"+str(i)+".npy"), embed)
-
+    if tf.flags.FLAGS.embedding=="user":
+        trainer = Trainer(tf.flags.FLAGS, nr_users=10000, nr_movies=1000)
+        out_arr = trainer.train(train_matrix, test_matrix)
+    elif tf.flags.FLAGS.embedding=="movie":
+        trainer = Trainer(tf.flags.FLAGS, nr_users=1000, nr_movies=10000)
+        out_arr = trainer.train(train_matrix.T, test_matrix.T)
     else:
-        # val_ids = split.get_validation(val_part=tf.flags.FLAGS.val_part)
-        val_ids = np.load("../Weights/val_id_folder/val_id"+str(9)+".npy")
-        omega_train, omega_test = get_datasplit(val_ids, data_path=tf.flags.FLAGS.train_data_path)
-        train_matrix = matrix_data_omega(omega_train)
-        test_matrix = matrix_data_omega(omega_test)
-        train_matrix, test_matrix = normalize_01(train_matrix, test_matrix)
-        print(np.unique(train_matrix), np.unique(test_matrix))
-        print(train_matrix.shape, test_matrix.shape)
+        print("ERROR: embedding must be user or movie")
+        exit()
 
-        trainer = Trainer(tf.flags.FLAGS)
-        out_matrix = trainer.train(train_matrix, test_matrix, variational=False)
-
-        make_submission(out_matrix, path = os.path.join(tf.flags.FLAGS.train_data_path, "sampleSubmission.csv"))
+    if tf.flags.FLAGS.return_embedding:
+        np.save(os.path.join(tf.flags.FLAGS.embedding_save_path, tf.flags.FLAGS.embedding+"_embedding_weights.npy"), out_arr)
+    else:
+        make_submission(out_arr, path = os.path.join("data", "sampleSubmission.csv"))

@@ -1,0 +1,5 @@
+logs/
+__pycache__/
+*npy
+.ipynb_checkpoints/
+src/__pycache__/
